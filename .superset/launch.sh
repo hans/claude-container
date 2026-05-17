@@ -100,6 +100,9 @@ NAME="claude-sandbox-${WORKTREE_BASENAME}-$(hash_path "$PWD")"
 # Claude Code accepts an initial prompt as a positional argument.
 # When no prompt is given, omit it so claude starts in plain interactive mode.
 claude_argv=(claude)
+if [ "${CLAUDE_SANDBOX_SKIP_PERMISSIONS:-1}" = "1" ]; then
+    claude_argv+=(--dangerously-skip-permissions)
+fi
 if [ -n "$PROMPT" ]; then
     claude_argv+=("$PROMPT")
 fi
