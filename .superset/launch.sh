@@ -164,11 +164,25 @@ fi
 #   enabled   -- set CLAUDE_SANDBOX_MOUNT_SYMLINKS=0 to skip the scan
 #                (useful for huge worktrees where `find` is slow).
 if [ "${CLAUDE_SANDBOX_MOUNT_SYMLINKS:-1}" = "1" ]; then
-    if [ "${CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW:-0}" = "1" ]; then
-        link_mount_mode="rw"
-    else
-        link_mount_mode="ro"
-    fi
+    # Determine mount mode for a resolved symlink target.
+    # Returns "rw" if CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW=1 (all rw), or if the
+    # target matches a prefix listed in CLAUDE_SANDBOX_SYMLINK_RW_PATHS
+    # (colon-delimited). Returns "ro" otherwise.
+    symlink_mount_mode() {
+        local target="$1"
+        if [ "${CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW:-0}" = "1" ]; then
+            echo "rw"; return
+        fi
+        if [ -n "${CLAUDE_SANDBOX_SYMLINK_RW_PATHS:-}" ]; then
+            local IFS=':'
+            for prefix in $CLAUDE_SANDBOX_SYMLINK_RW_PATHS; do
+                case "$target" in
+                    "$prefix"|"$prefix"/*) echo "rw"; return ;;
+                esac
+            done
+        fi
+        echo "ro"
+    }
 
     # Cross-platform realpath: macOS shipped /usr/bin/realpath in 12.0; older
     # macOS lacks it. Fall back to python3 (present on both modern macOS and
@@ -186,7 +200,7 @@ if [ "${CLAUDE_SANDBOX_MOUNT_SYMLINKS:-1}" = "1" ]; then
     pwd_real="$(resolve_path "$PWD")"
     [ -z "$pwd_real" ] && pwd_real="$PWD"
 
-    link_targets=()
+    link_target_modes=()
     # Prune directories that are symlink-heavy but whose external targets we
     # don't want to mount: .git (worktree pointer), .venv / venv (Python
     # interpreter symlinks into uv/pyenv/system), node_modules (npm bin
@@ -200,16 +214,17 @@ if [ "${CLAUDE_SANDBOX_MOUNT_SYMLINKS:-1}" = "1" ]; then
         esac
         # Skip if the target doesn't exist -- docker would refuse the mount.
         [ -e "$target" ] || continue
-        link_targets+=("$target")
+        link_target_modes+=("$target|$(symlink_mount_mode "$target")")
     done < <(find "$PWD" \( -path "$PWD/.git" -o -name ".venv" -o -name "venv" -o -name "node_modules" \) -prune -o -type l -print0 2>/dev/null)
 
-    if [ "${#link_targets[@]}" -gt 0 ]; then
-        # Dedupe (multiple links may point at the same target). bash 3.2 has
-        # no associative arrays, so we sort -u the list instead.
-        while IFS= read -r target; do
-            docker_args+=(-v "$target:$target:$link_mount_mode")
-            echo "claude-sandbox: mounting symlink target $target ($link_mount_mode)" >&2
-        done < <(printf '%s\n' "${link_targets[@]}" | sort -u)
+    if [ "${#link_target_modes[@]}" -gt 0 ]; then
+        # Dedupe targets (multiple symlinks may point at the same path). When
+        # the same target appears with both modes, prefer rw. Sort by target
+        # then by mode descending (rw > ro), then keep first occurrence.
+        while IFS='|' read -r target mode; do
+            docker_args+=(-v "$target:$target:$mode")
+            echo "claude-sandbox: mounting symlink target $target ($mode)" >&2
+        done < <(printf '%s\n' "${link_target_modes[@]}" | sort -t'|' -k1,1 -k2,2r | awk -F'|' '!seen[$1]++')
     fi
 fi
 

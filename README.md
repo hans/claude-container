@@ -42,9 +42,16 @@ Fill the agent fields like this:
 | Command (With Prompt)  | `.superset/launch.sh`                       |
 | Prompt Command Suffix  | *(empty)*                                   |
 | Task Prompt Template   | *(default is fine)*                         |
+| Environment            | `CLAUDE_SANDBOX_NETWORK=bridge` *(example)* |
 
 Superset appends the prompt as argv to "Command (With Prompt)" after the
 suffix, which is exactly what `launch.sh` expects.
+
+The **Environment** field is where you set `CLAUDE_SANDBOX_*` variables (see
+[Environment variables](#environment-variables) below). Each line in that field
+is passed to `launch.sh` as an environment variable before Docker runs. You can
+also `export` them in your shell before starting Superset if you prefer a
+host-wide default.
 
 > Superset doesn't define a `SUPERSET_PROMPT` env var; the env-var and stdin
 > paths in `launch.sh` are manual-use fallbacks (handy when invoking the
@@ -82,7 +89,14 @@ export CLAUDE_SANDBOX_IMAGE=claude-sandbox-myproj
 
 ## Environment variables
 
-These are read by `launch.sh` on the host:
+There are two places variables are consumed, and they require different
+placement:
+
+### Host-side variables (read by `launch.sh` before Docker runs)
+
+Set these in **Superset → Settings → Agents → your agent → Environment**, one
+per line. Superset injects them into the shell that runs `launch.sh`. You can
+also `export` them before starting Superset for a host-wide default.
 
 | Variable                     | Purpose                                                              | Default              |
 |------------------------------|----------------------------------------------------------------------|----------------------|
@@ -90,9 +104,29 @@ These are read by `launch.sh` on the host:
 | `CLAUDE_SANDBOX_NETWORK`     | `--network` value: `bridge` / `host` / `none` / custom network name  | `bridge`             |
 | `CLAUDE_SANDBOX_MOUNT_SSH`   | Set to `1` to mount `~/.ssh` read-only (for git push over SSH)       | unset (off)          |
 | `CLAUDE_SANDBOX_MOUNT_SYMLINKS`    | Set to `0` to skip the symlink-escape scan (see below)         | `1` (on)             |
-| `CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW` | Set to `1` to mount symlink targets read-write instead of `ro` | `0` (read-only)      |
+| `CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW` | Set to `1` to mount **all** symlink targets read-write          | `0` (read-only)      |
+| `CLAUDE_SANDBOX_SYMLINK_RW_PATHS`  | Colon-delimited path prefixes to mount rw; everything else stays ro. E.g. `/data/outputs:/scratch` | unset |
 | `CLAUDE_SANDBOX_PROMPT`      | Manual override for the agent's initial prompt                       | unset                |
-| `ANTHROPIC_*`                | Any env var matching this prefix is forwarded into the container     | inherited            |
+| `ANTHROPIC_*`                | Any var matching this prefix is forwarded into the container         | inherited from host  |
+
+### Container-side variables (visible to the agent inside Docker)
+
+Put project-specific secrets and config (API keys, model overrides, etc.) in a
+`.env` file at the worktree root. The container's `entrypoint.sh` sources it
+automatically on every launch, including reattaches. Example:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+SOME_PROJECT_API_KEY=...
+```
+
+`setup.sh` copies `../.env` → `./.env` when a new worktree is created (if the
+parent has one), so you can keep a single `.env` in the main checkout and have
+it propagate automatically.
+
+`ANTHROPIC_*` vars set on the host are also forwarded automatically by
+`launch.sh` (see table above), so you can choose whichever approach suits your
+secrets workflow.
 
 Network mode tradeoffs:
 - `bridge` (default): container gets its own NAT'd network. Outbound is fine;
@@ -136,8 +170,11 @@ and outside the container.
 Behavior:
 
 - **Read-only by default.** Symlinked results are typically inputs you
-  read, not write. Set `CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW=1` to mount them
-  read-write (e.g. for a shared output dir the agent appends to).
+  read, not write. Two ways to opt specific targets into rw:
+  - `CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW=1` — all symlink targets rw.
+  - `CLAUDE_SANDBOX_SYMLINK_RW_PATHS=/data/outputs:/scratch` — only targets
+    under those prefixes are rw; everything else stays ro. If the same target
+    would be mounted both ways (two symlinks, different callers), rw wins.
 - **`.git` is pruned from the scan** for speed (lots of files, almost
   never contains external symlinks).
 - **Targets inside `$PWD` are skipped** -- they're already covered by
