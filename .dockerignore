@@ -1,0 +1,21 @@
+# The Dockerfile doesn't COPY any repo contents (only entrypoint.sh), so
+# this list is largely defensive -- it keeps the build context small and
+# protects against accidentally baking secrets into the image if someone
+# later adds a `COPY . /workdir` line.
+.git
+.gitignore
+.superset/
+README.md
+
+node_modules
+__pycache__
+*.pyc
+.venv
+venv
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.idea
+.vscode
