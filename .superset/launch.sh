@@ -151,6 +151,67 @@ if [ "${CLAUDE_SANDBOX_MOUNT_SSH:-0}" = "1" ] && [ -d "$HOME/.ssh" ]; then
     docker_args+=(-v "$HOME/.ssh:/home/claude/.ssh:ro")
 fi
 
+# Symlinks inside the worktree may point outside $PWD (e.g. `results/`
+# symlinked from a sibling worktree, or a shared dataset directory). The
+# container otherwise only sees /workdir, so those links appear broken.
+# For each external target we bind-mount it at the same absolute host path
+# inside the container, so the link resolves identically to the host (same
+# trick as the .git-parent mount above).
+#
+# Defaults:
+#   read-only -- symlinked results are usually inputs to read, not write.
+#                Set CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW=1 to mount rw.
+#   enabled   -- set CLAUDE_SANDBOX_MOUNT_SYMLINKS=0 to skip the scan
+#                (useful for huge worktrees where `find` is slow).
+if [ "${CLAUDE_SANDBOX_MOUNT_SYMLINKS:-1}" = "1" ]; then
+    if [ "${CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW:-0}" = "1" ]; then
+        link_mount_mode="rw"
+    else
+        link_mount_mode="ro"
+    fi
+
+    # Cross-platform realpath: macOS shipped /usr/bin/realpath in 12.0; older
+    # macOS lacks it. Fall back to python3 (present on both modern macOS and
+    # any system that can run Claude Code).
+    resolve_path() {
+        if command -v realpath >/dev/null 2>&1; then
+            realpath "$1" 2>/dev/null
+        else
+            python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null
+        fi
+    }
+
+    # Resolve $PWD too so the "target inside worktree" check survives parent
+    # symlinks like macOS /tmp -> /private/tmp.
+    pwd_real="$(resolve_path "$PWD")"
+    [ -z "$pwd_real" ] && pwd_real="$PWD"
+
+    link_targets=()
+    # Prune .git (lots of files, rarely contains external symlinks). Other
+    # large-but-symlink-heavy dirs (node_modules, .venv) are left in -- if
+    # they make `find` too slow, set CLAUDE_SANDBOX_MOUNT_SYMLINKS=0.
+    while IFS= read -r -d '' link; do
+        target="$(resolve_path "$link")" || continue
+        [ -z "$target" ] && continue
+        # Skip targets inside the worktree -- already covered by /workdir.
+        case "$target" in
+            "$PWD"|"$PWD"/*|"$pwd_real"|"$pwd_real"/*) continue ;;
+        esac
+        # Skip if the target doesn't exist -- docker would refuse the mount.
+        [ -e "$target" ] || continue
+        link_targets+=("$target")
+    done < <(find "$PWD" -path "$PWD/.git" -prune -o -type l -print0 2>/dev/null)
+
+    if [ "${#link_targets[@]}" -gt 0 ]; then
+        # Dedupe (multiple links may point at the same target). bash 3.2 has
+        # no associative arrays, so we sort -u the list instead.
+        while IFS= read -r target; do
+            docker_args+=(-v "$target:$target:$link_mount_mode")
+            echo "claude-sandbox: mounting symlink target $target ($link_mount_mode)" >&2
+        done < <(printf '%s\n' "${link_targets[@]}" | sort -u)
+    fi
+fi
+
 # Forward ANTHROPIC_* env vars from the host (API keys, base URLs, model overrides).
 while IFS= read -r var; do
     [ -n "$var" ] && docker_args+=(-e "$var")

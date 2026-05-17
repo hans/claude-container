@@ -89,6 +89,8 @@ These are read by `launch.sh` on the host:
 | `CLAUDE_SANDBOX_IMAGE`       | Docker image to run                                                  | `claude-sandbox:latest` |
 | `CLAUDE_SANDBOX_NETWORK`     | `--network` value: `bridge` / `host` / `none` / custom network name  | `bridge`             |
 | `CLAUDE_SANDBOX_MOUNT_SSH`   | Set to `1` to mount `~/.ssh` read-only (for git push over SSH)       | unset (off)          |
+| `CLAUDE_SANDBOX_MOUNT_SYMLINKS`    | Set to `0` to skip the symlink-escape scan (see below)         | `1` (on)             |
+| `CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW` | Set to `1` to mount symlink targets read-write instead of `ro` | `0` (read-only)      |
 | `CLAUDE_SANDBOX_PROMPT`      | Manual override for the agent's initial prompt                       | unset                |
 | `ANTHROPIC_*`                | Any env var matching this prefix is forwarded into the container     | inherited            |
 
@@ -116,6 +118,56 @@ submodules work (same gitdir-pointer pattern).
 
 If your project uses a non-standard git layout (custom `GIT_DIR`, etc.),
 you may need to extend `launch.sh`.
+
+## How symlinks that escape the worktree are handled
+
+It's common to symlink a `results/` (or shared dataset) directory into a
+worktree from somewhere else on disk -- another worktree, a scratch dir,
+a network mount. Because the container only sees `/workdir` (the worktree
+bind mount), any symlink whose target lives outside `$PWD` would otherwise
+appear as a broken link inside the container.
+
+`launch.sh` handles this with the same trick used for the `.git` parent
+directory: scan the worktree for symlinks, resolve each target, and for
+every target outside `$PWD` add a bind mount at the *same absolute host
+path* inside the container. The symlink then resolves identically inside
+and outside the container.
+
+Behavior:
+
+- **Read-only by default.** Symlinked results are typically inputs you
+  read, not write. Set `CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW=1` to mount them
+  read-write (e.g. for a shared output dir the agent appends to).
+- **`.git` is pruned from the scan** for speed (lots of files, almost
+  never contains external symlinks).
+- **Targets inside `$PWD` are skipped** -- they're already covered by
+  the `/workdir` mount. The check is symlink-aware on the worktree side
+  too (e.g. macOS `/tmp` -> `/private/tmp`).
+- **Broken symlinks are skipped** -- docker would refuse the mount.
+- **Duplicate targets are deduplicated** -- two symlinks pointing at the
+  same directory produce one mount.
+- Each mount is logged to stderr at launch (`mounting symlink target ...`)
+  so it's visible what's being exposed to the agent.
+- The scan walks the full worktree on every launch. If you have a very
+  large tree (huge `node_modules`, etc.) and don't need this feature, set
+  `CLAUDE_SANDBOX_MOUNT_SYMLINKS=0` to skip it.
+- **The scan only runs on the initial `docker run`**, not on reattach
+  (`docker exec`). If you add a new external symlink while the container
+  is still up, exit and relaunch to pick it up -- mounts can't be added
+  to a running container.
+
+Caveat: any directory the agent can reach via a symlink is now writable
+on the host (if `_RW=1`) or readable in full (always, if mounted). Treat
+this as you would any bind mount -- only symlink in directories you're
+fine exposing to the sandbox.
+
+**Docker Desktop on macOS** restricts bind mounts to a configured set of
+host paths (default: `/Users`, `/tmp`, `/private`, `/var/folders`,
+`/Volumes`). If a symlink target lives outside that allowlist (e.g.
+`/opt/data/...`) `docker run` will fail with a "mounts denied" error.
+Fix: add the host path under Docker Desktop &rarr; Settings &rarr;
+Resources &rarr; File sharing, or move the target under an already-shared
+prefix.
 
 ## Troubleshooting
 
