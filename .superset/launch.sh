@@ -187,9 +187,10 @@ if [ "${CLAUDE_SANDBOX_MOUNT_SYMLINKS:-1}" = "1" ]; then
     [ -z "$pwd_real" ] && pwd_real="$PWD"
 
     link_targets=()
-    # Prune .git (lots of files, rarely contains external symlinks). Other
-    # large-but-symlink-heavy dirs (node_modules, .venv) are left in -- if
-    # they make `find` too slow, set CLAUDE_SANDBOX_MOUNT_SYMLINKS=0.
+    # Prune directories that are symlink-heavy but whose external targets we
+    # don't want to mount: .git (worktree pointer), .venv / venv (Python
+    # interpreter symlinks into uv/pyenv/system), node_modules (npm bin
+    # symlinks into global installs).
     while IFS= read -r -d '' link; do
         target="$(resolve_path "$link")" || continue
         [ -z "$target" ] && continue
@@ -200,7 +201,7 @@ if [ "${CLAUDE_SANDBOX_MOUNT_SYMLINKS:-1}" = "1" ]; then
         # Skip if the target doesn't exist -- docker would refuse the mount.
         [ -e "$target" ] || continue
         link_targets+=("$target")
-    done < <(find "$PWD" -path "$PWD/.git" -prune -o -type l -print0 2>/dev/null)
+    done < <(find "$PWD" \( -path "$PWD/.git" -o -name ".venv" -o -name "venv" -o -name "node_modules" \) -prune -o -type l -print0 2>/dev/null)
 
     if [ "${#link_targets[@]}" -gt 0 ]; then
         # Dedupe (multiple links may point at the same target). bash 3.2 has
