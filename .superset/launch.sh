@@ -173,9 +173,14 @@ if [ "${CLAUDE_SANDBOX_MOUNT_SYMLINKS:-1}" = "1" ]; then
         if [ "${CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW:-0}" = "1" ]; then
             echo "rw"; return
         fi
-        if [ -n "${CLAUDE_SANDBOX_SYMLINK_RW_PATHS:-}" ]; then
+        if [ -n "${CLAUDE_SANDBOX_SYMLINK_RW_PATHS:-results_scratch}" ]; then
             local IFS=':'
-            for prefix in $CLAUDE_SANDBOX_SYMLINK_RW_PATHS; do
+            for prefix in ${CLAUDE_SANDBOX_SYMLINK_RW_PATHS:-results_scratch}; do
+                case "$prefix" in
+                    /*) : ;;
+                    *) prefix="$(resolve_path "$PWD/$prefix")" || continue ;;
+                esac
+                [ -z "$prefix" ] && continue
                 case "$target" in
                     "$prefix"|"$prefix"/*) echo "rw"; return ;;
                 esac

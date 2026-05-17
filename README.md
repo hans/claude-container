@@ -105,7 +105,7 @@ also `export` them before starting Superset for a host-wide default.
 | `CLAUDE_SANDBOX_MOUNT_SSH`   | Set to `1` to mount `~/.ssh` read-only (for git push over SSH)       | unset (off)          |
 | `CLAUDE_SANDBOX_MOUNT_SYMLINKS`    | Set to `0` to skip the symlink-escape scan (see below)         | `1` (on)             |
 | `CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW` | Set to `1` to mount **all** symlink targets read-write          | `0` (read-only)      |
-| `CLAUDE_SANDBOX_SYMLINK_RW_PATHS`  | Colon-delimited path prefixes to mount rw; everything else stays ro. E.g. `/data/outputs:/scratch` | unset |
+| `CLAUDE_SANDBOX_SYMLINK_RW_PATHS`  | Colon-delimited path prefixes to mount rw; everything else stays ro. Absolute or relative to the worktree root. E.g. `results_scratch:/data/shared` | unset |
 | `CLAUDE_SANDBOX_PROMPT`      | Manual override for the agent's initial prompt                       | unset                |
 | `ANTHROPIC_*`                | Any var matching this prefix is forwarded into the container         | inherited from host  |
 
@@ -172,9 +172,10 @@ Behavior:
 - **Read-only by default.** Symlinked results are typically inputs you
   read, not write. Two ways to opt specific targets into rw:
   - `CLAUDE_SANDBOX_SYMLINK_MOUNTS_RW=1` — all symlink targets rw.
-  - `CLAUDE_SANDBOX_SYMLINK_RW_PATHS=/data/outputs:/scratch` — only targets
-    under those prefixes are rw; everything else stays ro. If the same target
-    would be mounted both ways (two symlinks, different callers), rw wins.
+  - `CLAUDE_SANDBOX_SYMLINK_RW_PATHS=results_scratch:/data/shared` — only
+    targets under those prefixes are rw; everything else stays ro. Paths are
+    absolute or relative to the worktree root. If the same target would be
+    mounted both ways (two symlinks, different modes), rw wins.
 - **`.git` is pruned from the scan** for speed (lots of files, almost
   never contains external symlinks).
 - **Targets inside `$PWD` are skipped** -- they're already covered by
