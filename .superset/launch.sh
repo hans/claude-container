@@ -63,16 +63,14 @@ fi
 # blob and stage it at ~/.claude/.credentials.json (where Claude Code on
 # Linux looks for it -- that path is inside the mounted ~/.claude directory).
 #
-# Caveat: when Claude inside the container refreshes the token, it writes a
-# new credentials file but does NOT update the host's keychain. The host's
-# keychain copy becomes stale, and you may need to re-run `claude /login`
-# on the host the next time you use Claude there. Refresh tokens last weeks,
-# so this is infrequent.
+# After the container exits we sync .credentials.json back to the keychain so
+# the next session (and native `claude` on the host) sees the refreshed token.
+MACOS_CREDS=""
 if [ "$(uname -s)" = "Darwin" ]; then
-    creds="$HOME/.claude/.credentials.json"
+    MACOS_CREDS="$HOME/.claude/.credentials.json"
     if blob="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null)"; then
         umask 077
-        printf '%s\n' "$blob" > "$creds"
+        printf '%s\n' "$blob" > "$MACOS_CREDS"
     else
         echo "claude-sandbox: warning -- couldn't read 'Claude Code-credentials' from keychain." >&2
         echo "  Run \`claude /login\` on the host (so the keychain entry exists)." >&2
@@ -115,8 +113,12 @@ if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
 fi
 
 # --- run flags --------------------------------------------------------------
+# Start detached (-d) so the container lifecycle is decoupled from the
+# launching terminal. All sessions (first and subsequent) attach via
+# `docker exec`, so closing any tab only drops that exec session -- the
+# container and every other agent inside it keep running.
 docker_args=(
-    run --rm -it
+    run -d --rm
     --name "$NAME"
     -v "$PWD:/workdir"
     -v "$HOME/.claude:/home/claude/.claude"      # rw -- claude writes session state here
@@ -127,6 +129,11 @@ docker_args=(
                                                   # when the runtime UID has no /etc/passwd entry
     -u "$(id -u):$(id -g)"                        # match host UID/GID so bind-mount writes work
     --network "$NETWORK"
+)
+
+# add 8888 port mapping
+docker_args+=(
+    -p 8888:8888
 )
 
 # Git worktree (and submodule) support: $PWD/.git is a *file* like
@@ -247,4 +254,23 @@ for var in SUPERSET_WORKSPACE_NAME SUPERSET_ROOT_PATH; do
 done
 
 # --- go ---------------------------------------------------------------------
-exec docker "${docker_args[@]}" "$IMAGE" "${claude_argv[@]}"
+# Start the detached keepalive container (no-op if it somehow already exists).
+docker "${docker_args[@]}" "$IMAGE" sleep infinity >/dev/null
+
+# Attach an interactive claude session. Closing this terminal only drops the
+# exec -- the container (and any other exec'd agents) keep running.
+# To stop the sandbox when finished: docker stop "$NAME"
+docker exec -it "$NAME" /usr/local/bin/entrypoint.sh "${claude_argv[@]}"
+exit_code=$?
+
+# macOS: sync the (possibly refreshed) credentials file back to the keychain
+# so the next session doesn't overwrite it with a stale entry.
+if [ -n "$MACOS_CREDS" ] && [ -f "$MACOS_CREDS" ]; then
+    if refreshed="$(cat "$MACOS_CREDS" 2>/dev/null)" && [ -n "$refreshed" ]; then
+        security add-generic-password -s 'Claude Code-credentials' -a "$USER" -w "$refreshed" -U 2>/dev/null \
+            && echo "claude-sandbox: synced refreshed credentials back to keychain." >&2 \
+            || echo "claude-sandbox: warning -- couldn't update keychain after session (will need to log in next time)." >&2
+    fi
+fi
+
+exit $exit_code
