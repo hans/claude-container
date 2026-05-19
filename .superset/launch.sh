@@ -127,13 +127,14 @@ docker_args=(
     -w /workdir
     -e HOME=/home/claude                          # ensure $HOME points at the user dir even
                                                   # when the runtime UID has no /etc/passwd entry
+    -e UV_PROJECT_ENVIRONMENT=/workdir/.venv-container  # separate venv from host's .venv
     -u "$(id -u):$(id -g)"                        # match host UID/GID so bind-mount writes work
     --network "$NETWORK"
 )
 
 # add 8888 port mapping
 docker_args+=(
-    -p 8888:8888
+    -p 8888
 )
 
 # Git worktree (and submodule) support: $PWD/.git is a *file* like
@@ -227,7 +228,7 @@ if [ "${CLAUDE_SANDBOX_MOUNT_SYMLINKS:-1}" = "1" ]; then
         # Skip if the target doesn't exist -- docker would refuse the mount.
         [ -e "$target" ] || continue
         link_target_modes+=("$target|$(symlink_mount_mode "$target")")
-    done < <(find "$PWD" \( -path "$PWD/.git" -o -name ".venv" -o -name "venv" -o -name "node_modules" \) -prune -o -type l -print0 2>/dev/null)
+    done < <(find "$PWD" \( -path "$PWD/.git" -o -name ".venv" -o -name ".venv-container" -o -name "venv" -o -name "node_modules" \) -prune -o -type l -print0 2>/dev/null)
 
     if [ "${#link_target_modes[@]}" -gt 0 ]; then
         # Dedupe targets (multiple symlinks may point at the same path). When
